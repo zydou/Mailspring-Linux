@@ -1,0 +1,77 @@
+---
+name: Mailspring
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/release.yml
+      - build.sh
+  schedule:
+    - cron: 0 23 * * *
+
+permissions: write-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: build
+    steps:
+      - name: check if we need to trigger a build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: check
+        run: |
+          VERSION=$(gh api /repos/Foundry376/Mailspring/releases/latest --jq '.tag_name')
+          echo "version=$VERSION" >> "$GITHUB_ENV"
+          if ! gh api "/repos/${{github.repository}}/releases/tags/$VERSION" > /dev/null 2>&1; then
+          echo "trigger=true" >> "$GITHUB_ENV"
+          echo "Build $VERSION"
+          else
+          echo "trigger=false" >> "$GITHUB_ENV"
+          echo "Skip $VERSION"
+          fi
+
+      - name: checkout
+        if: env.trigger == 'true'
+        uses: actions/checkout@main
+
+      - name: build
+        if: env.trigger == 'true'
+        env:
+          VERSION: ${{ env.version }}
+        run: |
+          sudo apt update
+          sudo apt install libfuse2
+          bash build.sh
+          shasum -a 1 mailspring-* > SHA1SUMS
+
+      - name: create release note
+        if: env.trigger == 'true'
+        run: |
+          echo "Build date: $(date '+%Y-%m-%d %H:%M:%S')" > note.md
+          echo '### SHA1 Checksums' >> note.md
+          echo '```' >> note.md  # Do not use double quotes
+          cat SHA1SUMS >> note.md
+          echo '```' >> note.md
+          cat note.md
+
+      - name: Release
+        if: env.trigger == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ env.version }}
+        run: |
+          gh release create "${VERSION}" --latest --notes-file note.md --title "${VERSION}" --repo "${{github.repository}}"
+          gh release edit "${VERSION}" --latest --notes-file note.md --title "${VERSION}" --repo "${{github.repository}}"
+          gh release upload "${VERSION}" ./mailspring-* --clobber --repo "${{github.repository}}"
+          gh release upload "${VERSION}" ./SHA1SUMS --clobber --repo "${{github.repository}}"
+
+  keepalive-job:
+    name: Keepalive Workflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: gautamkrishnar/keepalive-workflow@v2
